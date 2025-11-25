@@ -1,127 +1,187 @@
 @echo off
 setlocal enabledelayedexpansion
 
-:: Título do programa
-title Menu de Desligamento
+:: ==========================================
+:: CONFIGURAÇÕES INICIAIS E VERIFICAÇÃO DE ADMIN
+:: ==========================================
+title Gerenciador de Energia Avancado v2.0
 
-:: Cores
-set cor_titulo=4F
-set cor_menu=0F
-set cor_opcao=0A
-set cor_erro=0C
+:: Verifica permissoes de administrador
+openfiles >nul 2>&1
+if %errorlevel% neq 0 (
+    echo.
+    echo [!] Este script precisa de privilegios de Administrador.
+    echo [!] Solicitando elevacao...
+    powershell -Command "Start-Process '%~nx0' -Verb RunAs"
+    exit /b
+)
 
-:: Menu principal
+:: Definicao de cores (Fundo/Texto)
+set "c_padrao=0F"
+set "c_destaque=0B"
+set "c_alerta=0C"
+set "c_sucesso=0A"
+
+:: ==========================================
+:: MENU PRINCIPAL
+:: ==========================================
 :menu
 cls
-color %cor_titulo%
+color %c_padrao%
+call :header "MENU PRINCIPAL"
 echo.
-echo ===========================================
-echo      Menu de Desligamento
-echo ===========================================
+echo  [1] Agendar por TEMPO (ex: em 30 minutos)
+echo  [2] Agendar por HORARIO (ex: as 23:00)
+echo  [3] Cancelar agendamentos ativos
+echo  [4] Sair
 echo.
-color %cor_menu%
-echo 1. Desligar em X minutos
-echo 2. Desligar em um horario especifico
-echo 3. Cancelar desligamento agendado
-echo 4. Sair
+echo -------------------------------------------
+set /p "opt=>> Escolha uma opcao: "
+
+if "%opt%"=="1" goto :modo_tempo
+if "%opt%"=="2" goto :modo_horario
+if "%opt%"=="3" goto :cancelar
+if "%opt%"=="4" exit
+goto :erro_input
+
+:: ==========================================
+:: SELEÇÃO DE AÇÃO (Desligar ou Reiniciar)
+:: ==========================================
+:selecionar_acao
 echo.
-color %cor_opcao%
-set /p opcao="Escolha uma opcao: "
+echo  O que deseja fazer ao final do tempo?
+echo  [S] Desligar (Shutdown)
+echo  [R] Reiniciar (Restart)
+echo.
+set /p "acao_opt=>> Escolha (S/R): "
+if /i "%acao_opt%"=="S" (set "flag_cmd=/s" & set "txt_acao=desligado")
+if /i "%acao_opt%"=="R" (set "flag_cmd=/r" & set "txt_acao=reiniciado")
+if not defined flag_cmd goto :selecionar_acao
+goto :eof
 
-:: Validação da opção escolhida
-if "%opcao%"=="1" (
-  call :desligar_minutos
-) else if "%opcao%"=="2" (
-  call :desligar_horario
-) else if "%opcao%"=="3" (
-  call :cancelar_desligamento
-) else if "%opcao%"=="4" (
-  color %cor_menu%
-  echo Saindo...
-  exit
-) else (
-  color %cor_erro%
-  echo Opcao invalida.
-  pause
-  goto menu
-)
-
-goto menu
-
-:: Desligar em X minutos
-:desligar_minutos
+:: ==========================================
+:: MODO 1: TEMPO (Minutos)
+:: ==========================================
+:modo_tempo
 cls
-color %cor_titulo%
+call :header "AGENDAR POR MINUTOS"
+call :selecionar_acao
+
 echo.
-echo ===========================================
-echo      Desligar em X minutos
-echo ===========================================
-echo.
-color %cor_menu%
-echo Digite quantos minutos voce deseja esperar para desligar:
-set /p minutos=
+echo  Digite os minutos para aguardar (0 para imediato):
+set /p "minutos=>> "
 
-:: Validação da entrada
-set isnum=1
-for /f "delims=0123456789" %%i in ("%minutos%") do set isnum=0
+:: Validacao numerica via truque de 'set /a'
+set /a "teste=%minutos%" 2>nul
+if "%minutos%" neq "%teste%" goto :erro_input
+if %minutos% lss 0 goto :erro_input
 
-if "%isnum%"=="0" (
-  color %cor_erro%
-  echo Por favor, insira um numero valido.
-  pause
-  goto desligar_minutos
-)
-
+:: Calculo de segundos
 set /a segundos=%minutos%*60
-color %cor_menu%
-echo Desligando em %minutos% minutos (%segundos% segundos).
-shutdown /s /t %segundos%
-echo Agendamento realizado.
-pause
-goto menu
 
-:: Desligar em um horário específico
-:desligar_horario
+:: Executa o comando
+call :executar_shutdown %segundos%
+goto :menu
+
+:: ==========================================
+:: MODO 2: HORARIO ESPECIFICO (PowerShell Backend)
+:: ==========================================
+:modo_horario
 cls
-color %cor_titulo%
-echo.
-echo ===========================================
-echo      Desligar em um horario especifico
-echo ===========================================
-echo.
-color %cor_menu%
-echo Digite o horario para desligar (HH:MM):
-set /p horario=
+call :header "AGENDAR POR HORARIO"
+call :selecionar_acao
 
-:: Validação do formato do horário
-if not "%horario:~2,1%"==":" (
-  color %cor_erro%
-  echo Formato de horario invalido.
-  pause
-  goto desligar_horario
+echo.
+echo  Digite o horario no formato 24h (HH:MM):
+echo  Exemplo: 23:30 ou 08:15
+set /p "horario=>> "
+
+:: Validacao simples de formato
+echo %horario% | findstr /r "^[0-2][0-9]:[0-5][0-9]$" >nul
+if %errorlevel% neq 0 (
+    echo %horario% | findstr /r "^[0-9]:[0-5][0-9]$" >nul
+    if %errorlevel% neq 0 goto :erro_input
 )
 
-:: Cálculo do tempo restante para o horário desejado
-for /f "tokens=1-4 delims=/: " %%a in ("%time%") do set hora_atual=%%a& set minuto_atual=%%b
-for /f "tokens=1-2 delims=:" %%a in ("%horario%") do set hora_desejada=%%a& set minuto_desejado=%%b
+echo.
+echo  [i] Calculando diferenca de tempo...
 
-set /a tempo_restante=((hora_desejada*60+minuto_desejado)-(hora_atual*60+minuto_atual))*60
-
-if %tempo_restante% lss 0 (
-  set /a tempo_restante=%tempo_restante%+24*60*60
+:: O PowerShell aqui resolve o problema de datas.
+:: Se o horario ja passou hoje, ele calcula para o dia seguinte automaticamente.
+for /f "usebackq delims=" %%A in (`powershell -Command "$t = Get-Date '%horario%'; if($t -lt (Get-Date)){ $t = $t.AddDays(1) }; [int]($t - (Get-Date)).TotalSeconds"`) do (
+    set "segundos_restantes=%%A"
 )
 
-color %cor_menu%
-echo Desligando as %horario%.
-shutdown /s /t %tempo_restante%
-echo Agendamento realizado.
-pause
-goto menu
+if %segundos_restantes% lss 0 (
+    echo [!] Erro no calculo do tempo. Tente novamente.
+    pause
+    goto :menu
+)
 
-:: Cancelar desligamento agendado
-:cancelar_desligamento
-shutdown /a
-color %cor_menu%
-echo Desligamento agendado cancelado.
+call :executar_shutdown %segundos_restantes%
+goto :menu
+
+:: ==========================================
+:: EXECUTAR E FEEDBACK
+:: ==========================================
+:executar_shutdown
+:: %1 = segundos
+cls
+call :header "CONFIRMACAO"
+
+:: Pega a data/hora exata do desligamento via PowerShell para exibir ao usuario
+for /f "usebackq delims=" %%D in (`powershell -Command "(Get-Date).AddSeconds(%1).ToString('dd/MM/yyyy HH:mm:ss')"`) do (
+    set "data_final=%%D"
+)
+
+color %c_sucesso%
+echo.
+echo  =============================================
+echo   SUCESSO! O computador sera %txt_acao%.
+echo  =============================================
+echo.
+echo   Tempo restante : %1 segundos
+echo   Data da acao   : %data_final%
+echo.
+shutdown %flag_cmd% /t %1 /f
+echo  Pressione qualquer tecla para voltar ao menu...
+pause >nul
+goto :menu
+
+:: ==========================================
+:: CANCELAR
+:: ==========================================
+:cancelar
+cls
+shutdown /a >nul 2>&1
+if %errorlevel% equ 0 (
+    color %c_sucesso%
+    echo.
+    echo  [OK] Agendamento cancelado com sucesso.
+) else (
+    color %c_alerta%
+    echo.
+    echo  [!] Nenhum agendamento encontrado para cancelar.
+)
 pause
-goto menu
+goto :menu
+
+:: ==========================================
+:: TELAS DE ERRO E HEADER
+:: ==========================================
+:erro_input
+color %c_alerta%
+echo.
+echo  [ERRO] Entrada invalida. Verifique o formato.
+pause
+goto :menu
+
+:header
+echo.
+echo ===========================================
+echo   GERENCIADOR DE ENERGIA v2.0
+echo   %~1
+echo ===========================================
+echo.
+color %c_padrao%
+goto :eof
